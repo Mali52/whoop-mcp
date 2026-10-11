@@ -23,6 +23,11 @@ npx -y whoop-ai-mcp@latest setup --client=claude-desktop
 </p>
 
 <p align="center">
+	<a href="https://github.com/shashankswe2020-ux/whoop-mcp/issues/new?template=bug_report.yml"><img src="https://img.shields.io/badge/Report%20an%20issue-d73a4a?style=for-the-badge&logo=github&logoColor=white" alt="Report an issue"></a>
+	<a href="https://github.com/shashankswe2020-ux/whoop-mcp/issues/new?template=feature_request.yml"><img src="https://img.shields.io/badge/Request%20a%20feature-16803c?style=for-the-badge&logo=github&logoColor=white" alt="Request a feature"></a>
+</p>
+
+<p align="center">
 	<img src="images/Screenshot%202026-05-30%20at%201.36.39%E2%80%AFPM.png" width="880" alt="WHOOP MCP in Claude Desktop: a weekly health review with recovery, HRV, sleep and workout summaries">
 	<br><sub>Claude Desktop builds the review; whoop-ai-mcp supplies the data. Your results and layout will differ.</sub>
 </p>

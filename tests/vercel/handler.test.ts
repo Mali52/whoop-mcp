@@ -16,6 +16,7 @@ import { createFakeSupabase, type FakeSupabase } from "../helpers/fake-supabase.
 
 const PUBLIC_URL = "https://whoop.example.com";
 const AUTH_TOKEN = "t".repeat(48);
+const ENCRYPTION_KEY = "e".repeat(48);
 const PASSWORD = "correct horse battery staple";
 const CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
 
@@ -25,6 +26,8 @@ const ENV = {
   SUPABASE_URL: "https://proj.supabase.co",
   SUPABASE_SERVICE_ROLE_KEY: "sb_secret_test",
   MCP_AUTH_TOKEN: AUTH_TOKEN,
+  MCP_JWT_SECRET: "j".repeat(48),
+  WHOOP_TOKEN_ENCRYPTION_KEY: ENCRYPTION_KEY,
   MCP_CONNECTOR_PASSWORD: PASSWORD,
   PUBLIC_URL,
 };
@@ -146,7 +149,7 @@ function callTool(name: string): unknown {
 }
 
 async function storeWhoopTokens(): Promise<void> {
-  const repo = createSupabaseTokenRepository(db, await deriveEncryptionKey(AUTH_TOKEN));
+  const repo = createSupabaseTokenRepository(db, await deriveEncryptionKey(ENCRYPTION_KEY));
   await repo.save({
     access_token: "whoop-access",
     refresh_token: "whoop-refresh",
@@ -176,6 +179,15 @@ describe("hosted handler — basic routes", () => {
     const res = await realFetch(`${baseUrl}/privacy`);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("single-user");
+  });
+
+  it("sends a restrictive CSP and anti-framing headers on static pages", async () => {
+    for (const path of ["/", "/privacy"]) {
+      const res = await realFetch(`${baseUrl}${path}`);
+      expect(res.headers.get("content-security-policy")).toContain("default-src 'none'");
+      expect(res.headers.get("x-frame-options")).toBe("DENY");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    }
   });
 
   it("returns 404 for unknown routes", async () => {
@@ -277,13 +289,21 @@ describe("hosted handler — WHOOP connect flow", () => {
     expect(location.searchParams.get("redirect_uri")).toBe(`${PUBLIC_URL}/whoop/callback`);
     expect(location.searchParams.get("code_challenge_method")).toBe("S256");
     const state = location.searchParams.get("state") ?? "";
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain(`__Host-whoop_link_state=${state}`);
+    expect(setCookie).toMatch(/HttpOnly/);
+    expect(setCookie).toMatch(/Secure/);
+    expect(setCookie).toMatch(/SameSite=Lax/);
+    const cookie = { Cookie: `__Host-whoop_link_state=${state}` };
 
     whoopFetch.mockResolvedValue(tokenResponse());
     const callback = await realFetch(
-      `${baseUrl}/whoop/callback?code=whoop-code&state=${encodeURIComponent(state)}`
+      `${baseUrl}/whoop/callback?code=whoop-code&state=${encodeURIComponent(state)}`,
+      { headers: cookie }
     );
     expect(callback.status).toBe(200);
     expect(await callback.text()).toContain("WHOOP connected");
+    expect(callback.headers.get("set-cookie")).toContain("Max-Age=0");
 
     const body = String((whoopFetch.mock.calls[0] as [string, RequestInit])[1].body);
     expect(body).toContain("code=whoop-code");
@@ -294,20 +314,79 @@ describe("hosted handler — WHOOP connect flow", () => {
     expect(row?.access_token).not.toBe("whoop-access");
 
     // state is single-use
-    const replay = await realFetch(`${baseUrl}/whoop/callback?code=x&state=${state}`);
+    const replay = await realFetch(`${baseUrl}/whoop/callback?code=x&state=${state}`, {
+      headers: cookie,
+    });
     expect(replay.status).toBe(400);
   });
 
+  it("refuses to finish a flow started in another browser (no state cookie)", async () => {
+    const res = await submitPassword(PASSWORD);
+    const state = new URL(res.headers.get("location") ?? "").searchParams.get("state") ?? "";
+
+    const stolen = await realFetch(`${baseUrl}/whoop/callback?code=attacker-code&state=${state}`);
+    expect(stolen.status).toBe(400);
+    expect(whoopFetch).not.toHaveBeenCalled();
+    // The pending state is untouched, so the owner's own browser can still finish.
+    expect(db.rows("whoop_oauth_states")).toHaveLength(1);
+  });
+
   it("rejects callbacks with an unknown state", async () => {
-    const res = await realFetch(`${baseUrl}/whoop/callback?code=x&state=forged`);
+    const res = await realFetch(`${baseUrl}/whoop/callback?code=x&state=forged`, {
+      headers: { Cookie: "__Host-whoop_link_state=forged" },
+    });
     expect(res.status).toBe(400);
     expect(whoopFetch).not.toHaveBeenCalled();
   });
 
-  it("shows WHOOP-side errors", async () => {
-    const res = await realFetch(`${baseUrl}/whoop/callback?error=access_denied`);
-    expect(res.status).toBe(400);
-    expect(await res.text()).toContain("access_denied");
+  it("shows fixed messages for WHOOP-side errors instead of reflecting them", async () => {
+    const denied = await realFetch(`${baseUrl}/whoop/callback?error=access_denied`);
+    expect(denied.status).toBe(400);
+    expect(await denied.text()).toContain("You declined access on WHOOP.");
+
+    const spoof = await realFetch(
+      `${baseUrl}/whoop/callback?error=${encodeURIComponent("Call +1-555 to restore access")}`
+    );
+    expect(await spoof.text()).not.toContain("+1-555");
+  });
+
+  it("rejects oversized form bodies without processing them", async () => {
+    // readBody aborts the connection once the 4KB form limit is exceeded.
+    const outcome = await realFetch(`${baseUrl}/whoop/connect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `connector_password=${"x".repeat(10_000)}`,
+    }).then(
+      (res) => res.status,
+      () => "connection closed"
+    );
+    expect([400, "connection closed"]).toContain(outcome);
+    expect(db.rows("auth_failures")).toHaveLength(0);
+  });
+
+  it("locks both password forms after 10 failures across endpoints", async () => {
+    for (let i = 0; i < 10; i++) {
+      expect((await submitPassword(`wrong password ${i}`)).status).toBe(401);
+    }
+    expect(db.rows("auth_failures")).toHaveLength(10);
+
+    // Even the correct password is refused while locked …
+    expect((await submitPassword(PASSWORD)).status).toBe(429);
+    // … and the lock also covers the Claude connector login.
+    const authorize = await realFetch(`${baseUrl}/authorize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: "whoop-mcp-connector",
+        redirect_uri: CLAUDE_CALLBACK,
+        response_type: "code",
+        code_challenge: "c".repeat(43),
+        code_challenge_method: "S256",
+        connector_password: PASSWORD,
+      }).toString(),
+      redirect: "manual",
+    });
+    expect(authorize.status).toBe(429);
   });
 });
 
@@ -363,7 +442,12 @@ describe("hosted handler — Claude OAuth connector", () => {
       }).toString(),
     });
     expect(tokenRes.status).toBe(200);
-    const tokens = (await tokenRes.json()) as { access_token: string; refresh_token: string };
+    const tokens = (await tokenRes.json()) as {
+      access_token: string;
+      refresh_token: string;
+      expires_in: number;
+    };
+    expect(tokens.expires_in).toBe(3600);
 
     const res = await mcp(INITIALIZE, tokens.access_token);
     expect(res.status).toBe(200);

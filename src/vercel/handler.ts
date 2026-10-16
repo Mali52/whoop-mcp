@@ -27,12 +27,12 @@ import {
   sendJson,
 } from "../transport/http.js";
 import { createOAuthApp } from "../transport/oauth-connector.js";
-import { deriveJwtSecret } from "../transport/oauth-helpers.js";
 import { escapeHtml } from "../transport/oauth-connector.js";
 import { createLogger, type Logger } from "../logging/logger.js";
 import { createSupabaseRest, type SupabaseRest } from "../storage/supabase-rest.js";
 import {
   createSupabaseAuthCodeStore,
+  createSupabaseLoginGuard,
   createSupabaseTokenRepository,
   createSupabaseUsedJtiStore,
   createSupabaseWhoopStateStore,
@@ -53,6 +53,19 @@ export interface VercelHandlerDeps {
   db?: SupabaseRest;
   logger?: Logger;
 }
+
+/** Access-token lifetime for the hosted connector (1 hour). */
+export const HOSTED_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
+
+/** Headers for the static HTML pages (no scripts, forms or frames). */
+const STATIC_PAGE_HEADERS = {
+  "Content-Type": "text/html; charset=utf-8",
+  "Content-Security-Policy":
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+};
 
 const OAUTH_PATHS = new Set(["/authorize", "/token", "/register", "/revoke"]);
 
@@ -145,6 +158,9 @@ export async function createVercelHandler(deps: VercelHandlerDeps): Promise<Node
   const resourceUrl = `${config.publicUrl}/mcp`;
   const resourceMetadataUrl = `${config.publicUrl}/.well-known/oauth-protected-resource/mcp`;
 
+  // One brute-force guard for both password forms, shared by all instances.
+  const loginGuard = createSupabaseLoginGuard(db);
+
   const link = createWhoopLinkHandlers({
     publicUrl: config.publicUrl,
     connectorPassword: config.connectorPassword,
@@ -152,12 +168,11 @@ export async function createVercelHandler(deps: VercelHandlerDeps): Promise<Node
     whoopClientSecret: config.whoopClientSecret,
     tokens,
     states: createSupabaseWhoopStateStore(db),
+    loginGuard,
     logger,
   });
 
-  const jwtSecret = config.jwtSecret
-    ? Buffer.from(config.jwtSecret, "utf-8")
-    : await deriveJwtSecret(config.authToken);
+  const jwtSecret = Buffer.from(config.jwtSecret, "utf-8");
   const oauthApp = createOAuthApp({
     connectorPassword: config.connectorPassword,
     publicUrl: config.publicUrl,
@@ -174,6 +189,10 @@ export async function createVercelHandler(deps: VercelHandlerDeps): Promise<Node
     resourceServerUrl: resourceUrl,
     authCodeStore: createSupabaseAuthCodeStore(db),
     usedJtiStore: createSupabaseUsedJtiStore(db),
+    loginGuard,
+    // Short-lived access tokens limit the damage of a leaked token; Claude
+    // refreshes transparently with the rotating refresh token.
+    accessTokenTtlSeconds: HOSTED_ACCESS_TOKEN_TTL_SECONDS,
   });
   const oauthHandler = oauthApp.app as unknown as (
     req: IncomingMessage,
@@ -315,20 +334,13 @@ export async function createVercelHandler(deps: VercelHandlerDeps): Promise<Node
       }
 
       if (pathname === "/privacy" && (req.method === "GET" || req.method === "HEAD")) {
-        res.writeHead(200, {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "public, max-age=3600",
-        });
+        res.writeHead(200, { ...STATIC_PAGE_HEADERS, "Cache-Control": "public, max-age=3600" });
         res.end(privacyPage());
         return;
       }
 
       if (pathname === "/" && (req.method === "GET" || req.method === "HEAD")) {
-        res.writeHead(200, {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-store",
-          "X-Frame-Options": "DENY",
-        });
+        res.writeHead(200, { ...STATIC_PAGE_HEADERS, "Cache-Control": "no-store" });
         res.end(landingPage(config.publicUrl));
         return;
       }

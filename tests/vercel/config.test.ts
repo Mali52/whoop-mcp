@@ -7,6 +7,8 @@ const BASE = {
   SUPABASE_URL: "https://proj.supabase.co",
   SUPABASE_SERVICE_ROLE_KEY: "sb_secret_x",
   MCP_AUTH_TOKEN: "a".repeat(64),
+  MCP_JWT_SECRET: "j".repeat(64),
+  WHOOP_TOKEN_ENCRYPTION_KEY: "e".repeat(64),
   MCP_CONNECTOR_PASSWORD: "correct horse battery",
   PUBLIC_URL: "https://whoop.example.com/",
 };
@@ -17,9 +19,9 @@ describe("parseHostedConfig", () => {
     expect(config.publicUrl).toBe("https://whoop.example.com");
     expect(config.allowedRedirectUris).toEqual(DEFAULT_ALLOWED_REDIRECT_URIS);
     expect(config.oauthClientId).toBe("whoop-mcp-connector");
-    expect(config.tokenEncryptionSecret).toBe(BASE.MCP_AUTH_TOKEN);
+    expect(config.jwtSecret).toBe(BASE.MCP_JWT_SECRET);
+    expect(config.tokenEncryptionSecret).toBe(BASE.WHOOP_TOKEN_ENCRYPTION_KEY);
     expect(config.privacyMode).toBe("standard");
-    expect(config.jwtSecret).toBeUndefined();
   });
 
   it("infers PUBLIC_URL from Vercel's production URL", () => {
@@ -44,15 +46,12 @@ describe("parseHostedConfig", () => {
     const config = parseHostedConfig({
       ...BASE,
       ALLOWED_REDIRECT_URIS: "https://a.example/cb, https://b.example/cb",
-      MCP_JWT_SECRET: "jwt",
-      WHOOP_TOKEN_ENCRYPTION_KEY: "enc",
+
       WHOOP_MCP_PRIVACY_MODE: "aggregate",
       WHOOP_MCP_DISABLE_RESOURCES: "1",
       MCP_ALLOWED_ORIGINS: "https://x.example",
     });
     expect(config.allowedRedirectUris).toEqual(["https://a.example/cb", "https://b.example/cb"]);
-    expect(config.jwtSecret).toBe("jwt");
-    expect(config.tokenEncryptionSecret).toBe("enc");
     expect(config.privacyMode).toBe("aggregate");
     expect(config.disableResources).toBe(true);
     expect(config.allowedOrigins).toEqual(["https://x.example"]);
@@ -78,6 +77,25 @@ describe("parseHostedConfig", () => {
     expect(message).toContain("PUBLIC_URL must use https://");
     expect(message).toContain("SUPABASE_URL is not a valid URL.");
     expect(message).not.toContain("short-secret-value");
+  });
+
+  it("requires independent JWT and encryption secrets of at least 32 characters", () => {
+    expect(() =>
+      parseHostedConfig({
+        ...BASE,
+        MCP_JWT_SECRET: undefined,
+        WHOOP_TOKEN_ENCRYPTION_KEY: undefined,
+      })
+    ).toThrow(/MCP_JWT_SECRET is required[\s\S]*WHOOP_TOKEN_ENCRYPTION_KEY is required/);
+    expect(() => parseHostedConfig({ ...BASE, MCP_JWT_SECRET: "short" })).toThrow(
+      "MCP_JWT_SECRET must be at least 32 characters."
+    );
+  });
+
+  it("rejects reusing one secret for several purposes", () => {
+    expect(() =>
+      parseHostedConfig({ ...BASE, WHOOP_TOKEN_ENCRYPTION_KEY: BASE.MCP_AUTH_TOKEN })
+    ).toThrow("must all be different");
   });
 
   it("requires a public URL when not on Vercel", () => {

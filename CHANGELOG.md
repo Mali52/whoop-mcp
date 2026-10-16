@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Hosted mode requires independent `MCP_JWT_SECRET` and
+  `WHOOP_TOKEN_ENCRYPTION_KEY` (≥ 32 chars, all distinct) instead of deriving
+  them from `MCP_AUTH_TOKEN`.
+- Global brute-force lock for the connector password, shared by `/authorize`
+  and `/whoop/connect` and stored in Supabase (`auth_failures`).
+- WHOOP connect flow bound to the initiating browser via a `__Host-` cookie;
+  WHOOP error codes are no longer reflected; form bodies limited to 4 KB.
+- Connector access tokens last 1 hour in hosted mode; the login page warns
+  against links sent by others.
+- AES-GCM tags pinned to 16 bytes; WHOOP token requests time out after 10 s;
+  PostgREST error details are no longer logged; config errors are no longer
+  returned publicly; CSP and anti-framing headers on all pages.
+- Supabase hardening migration: revoked API access to the trigger function and
+  default privileges for future tables.
+- Connector `/authorize` rate limit only counts failed logins; login redirects
+  use 302 on Vercel; CSP `form-action` allows the Claude callback.
+
 ### Added
 - Serverless deployment on Vercel (`api/index.js`, `vercel.json`) with all
   state in Supabase: encrypted WHOOP tokens, connector authorization codes and

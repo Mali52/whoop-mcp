@@ -169,6 +169,18 @@ export interface UsedJtiRepository {
 }
 
 /**
+ * Brute-force guard for password-gated endpoints. On serverless the
+ * per-instance rate limiter is not enough: failures must be counted
+ * centrally so an attacker cannot spread guesses across instances.
+ */
+export interface LoginGuard {
+  /** True while too many recent failures exist (across all instances/endpoints). */
+  isLocked(): MaybePromise<boolean>;
+  /** Record one failed password attempt. */
+  recordFailure(source: string, ip: string): MaybePromise<void>;
+}
+
+/**
  * In-memory store for OAuth authorization codes.
  * Codes are one-time use; consuming a code marks it consumed but does not
  * delete it (allows replay detection within the TTL window).

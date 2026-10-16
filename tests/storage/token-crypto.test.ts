@@ -39,6 +39,17 @@ describe("token-crypto", () => {
     expect(() => decryptString(parts.join("."), key)).toThrow();
   });
 
+  it("rejects truncated authentication tags", async () => {
+    const key = await deriveEncryptionKey("secret");
+    const parts = encryptString("value", key).split(".");
+    parts[2] = Buffer.from(parts[2] ?? "", "base64url")
+      .subarray(0, 4)
+      .toString("base64url");
+    expect(() => decryptString(parts.join("."), key)).toThrow(
+      "Unsupported encrypted token format."
+    );
+  });
+
   it("rejects unknown formats", async () => {
     const key = await deriveEncryptionKey("secret");
     expect(() => decryptString("plain-text-token", key)).toThrow(

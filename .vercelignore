@@ -7,3 +7,7 @@ tests
 coverage
 dist
 .github
+# Local secrets must never be uploaded by `vercel deploy`
+.env
+.env.*
+!.env.example

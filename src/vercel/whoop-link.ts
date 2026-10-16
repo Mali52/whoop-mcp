@@ -21,13 +21,26 @@ import {
 import { readBody, safeTokenCompare } from "../transport/http.js";
 import { escapeHtml } from "../transport/oauth-connector.js";
 import type { WhoopStateStore, WhoopTokenRepository } from "../storage/supabase-stores.js";
+import type { LoginGuard } from "../transport/oauth-helpers.js";
 import type { Logger } from "../logging/logger.js";
 
 export const WHOOP_CONNECT_PATH = "/whoop/connect";
 export const WHOOP_CALLBACK_PATH = "/whoop/callback";
 
-/** Failed password attempts allowed per IP per minute (per instance). */
-const MAX_ATTEMPTS_PER_MINUTE = 5;
+/** The connect form only carries a password. */
+const MAX_FORM_BYTES = 4 * 1024;
+
+/** `__Host-` prefix: Secure, host-only, Path=/ — cannot be set by subdomains. */
+export const STATE_COOKIE = "__Host-whoop_link_state";
+const STATE_COOKIE_MAX_AGE = 10 * 60;
+
+function readCookie(req: IncomingMessage, name: string): string | null {
+  for (const part of (req.headers.cookie ?? "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq !== -1 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return null;
+}
 
 export interface WhoopLinkOptions {
   publicUrl: string;
@@ -36,6 +49,8 @@ export interface WhoopLinkOptions {
   whoopClientSecret: string;
   tokens: WhoopTokenRepository;
   states: WhoopStateStore;
+  /** Shared with /authorize so guesses on both endpoints count together. */
+  loginGuard: LoginGuard;
   logger?: Logger;
 }
 
@@ -124,23 +139,6 @@ export function createWhoopLinkHandlers(options: WhoopLinkOptions): {
     clientSecret: options.whoopClientSecret,
     redirectUri,
   };
-  const attempts = new Map<string, { count: number; resetAt: number }>();
-
-  function tooManyAttempts(ip: string): boolean {
-    const now = Date.now();
-    const bucket = attempts.get(ip);
-    if (!bucket || bucket.resetAt <= now) {
-      attempts.set(ip, { count: 0, resetAt: now + 60_000 });
-      return false;
-    }
-    return bucket.count >= MAX_ATTEMPTS_PER_MINUTE;
-  }
-
-  function recordFailure(ip: string): void {
-    const bucket = attempts.get(ip);
-    if (bucket) bucket.count++;
-  }
-
   const connect: NodeHandler = async (req, res) => {
     if (req.method === "GET") {
       sendPage(res, 200, "Connect WHOOP", connectForm());
@@ -152,26 +150,26 @@ export function createWhoopLinkHandlers(options: WhoopLinkOptions): {
       return;
     }
 
-    const ip = clientIp(req);
-    if (tooManyAttempts(ip)) {
+    if (await options.loginGuard.isLocked()) {
       sendPage(
         res,
         429,
         "Connect WHOOP",
-        connectForm("Too many attempts. Wait a minute and retry.")
+        connectForm("Too many failed attempts. Try again in 15 minutes.")
       );
       return;
     }
 
     let password = "";
     try {
-      password = new URLSearchParams(await readBody(req)).get("connector_password") ?? "";
+      const form = new URLSearchParams(await readBody(req, MAX_FORM_BYTES));
+      password = form.get("connector_password") ?? "";
     } catch {
       sendPage(res, 400, "Connect WHOOP", connectForm("Invalid form submission."));
       return;
     }
     if (!safeTokenCompare(password, options.connectorPassword)) {
-      recordFailure(ip);
+      await options.loginGuard.recordFailure("whoop-connect", clientIp(req));
       sendPage(res, 401, "Connect WHOOP", connectForm("Incorrect password. Try again."));
       return;
     }
@@ -184,6 +182,9 @@ export function createWhoopLinkHandlers(options: WhoopLinkOptions): {
     res.writeHead(303, {
       Location: buildAuthorizationUrl(oauthConfig, state, codeChallenge),
       "Cache-Control": "no-store",
+      // Binds the flow to this browser: a leaked WHOOP consent URL cannot be
+      // completed elsewhere to swap in another WHOOP account.
+      "Set-Cookie": `${STATE_COOKIE}=${state}; Path=/; Max-Age=${STATE_COOKIE_MAX_AGE}; HttpOnly; Secure; SameSite=Lax`,
     });
     res.end();
   };
@@ -191,27 +192,40 @@ export function createWhoopLinkHandlers(options: WhoopLinkOptions): {
   const callback: NodeHandler = async (req, res) => {
     const url = new URL(req.url ?? "/", options.publicUrl);
     const retry = `<p><a href="${WHOOP_CONNECT_PATH}">Start again</a></p>`;
+    // The state cookie is single-use: clear it on every callback outcome.
+    res.setHeader(
+      "Set-Cookie",
+      `${STATE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`
+    );
 
     const whoopError = url.searchParams.get("error");
     if (whoopError) {
+      // Fixed messages only — never reflect attacker-chosen text on this origin.
+      const message =
+        whoopError === "access_denied"
+          ? "You declined access on WHOOP."
+          : "WHOOP reported an error while authorizing.";
       sendPage(
         res,
         400,
         "WHOOP connection failed",
-        `<h1>WHOOP connection failed</h1><p class="error">WHOOP returned: ${escapeHtml(whoopError)}</p>${retry}`
+        `<h1>WHOOP connection failed</h1><p class="error">${message}</p>${retry}`
       );
       return;
     }
 
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
-    const codeVerifier = state ? await options.states.consume(state) : null;
+    const cookieState = readCookie(req, STATE_COOKIE);
+    const browserMatches =
+      state !== null && cookieState !== null && safeTokenCompare(state, cookieState);
+    const codeVerifier = browserMatches && state ? await options.states.consume(state) : null;
     if (!code || !codeVerifier) {
       sendPage(
         res,
         400,
         "WHOOP connection failed",
-        `<h1>Link expired or invalid</h1><p>This connection attempt is no longer valid.</p>${retry}`
+        `<h1>Link expired or invalid</h1><p>This connection attempt is no longer valid. Start it again and finish it in the same browser within 10 minutes.</p>${retry}`
       );
       return;
     }

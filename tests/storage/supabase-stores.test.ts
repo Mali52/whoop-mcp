@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
   createSupabaseAuthCodeStore,
+  createSupabaseLoginGuard,
   createSupabaseTokenRepository,
   createSupabaseUsedJtiStore,
   createSupabaseWhoopStateStore,
@@ -200,5 +201,34 @@ describe("SupabaseWhoopStateStore", () => {
     await store.create("state-1", "verifier-1");
     vi.setSystemTime(1_002_000);
     expect(await store.consume("state-1")).toBeNull();
+  });
+});
+
+describe("SupabaseLoginGuard", () => {
+  it("locks after the maximum number of failures within the window", async () => {
+    const guard = createSupabaseLoginGuard(db, { maxFailures: 3, windowMs: 60_000 });
+    expect(await guard.isLocked()).toBe(false);
+    await guard.recordFailure("authorize", "1.1.1.1");
+    await guard.recordFailure("whoop-connect", "2.2.2.2");
+    expect(await guard.isLocked()).toBe(false);
+    await guard.recordFailure("authorize", "3.3.3.3");
+    expect(await guard.isLocked()).toBe(true);
+  });
+
+  it("unlocks once failures fall out of the window", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const guard = createSupabaseLoginGuard(db, { maxFailures: 1, windowMs: 1000 });
+    await guard.recordFailure("authorize", "1.1.1.1");
+    expect(await guard.isLocked()).toBe(true);
+    vi.setSystemTime(1_002_000);
+    expect(await guard.isLocked()).toBe(false);
+  });
+
+  it("stores the source and a bounded IP", async () => {
+    const guard = createSupabaseLoginGuard(db);
+    await guard.recordFailure("whoop-connect", "x".repeat(500));
+    const [row] = db.rows("auth_failures");
+    expect(row?.source).toBe("whoop-connect");
+    expect(String(row?.ip)).toHaveLength(64);
   });
 });

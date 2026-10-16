@@ -66,13 +66,13 @@ configures the build. Then set these environment variables for
 | `WHOOP_CLIENT_SECRET` | yes | From the WHOOP developer dashboard |
 | `SUPABASE_URL` | yes | `https://<ref>.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | Or `SUPABASE_SECRET_KEY` (`sb_secret_...`) |
-| `MCP_AUTH_TOKEN` | yes | ≥ 32 chars, e.g. `openssl rand -hex 32`. Static bearer for header clients; also seeds the JWT and token-encryption keys |
+| `MCP_AUTH_TOKEN` | yes | ≥ 32 chars. Static bearer for header clients (Claude Code, Cursor) |
+| `MCP_JWT_SECRET` | yes | ≥ 32 chars, different from the others. Signs connector tokens |
+| `WHOOP_TOKEN_ENCRYPTION_KEY` | yes | ≥ 32 chars, different from the others. Encrypts WHOOP tokens at rest |
 | `MCP_CONNECTOR_PASSWORD` | yes | ≥ 12 chars. Asked when Claude connects and on `/whoop/connect` |
 | `PUBLIC_URL` | no | Defaults to `https://$VERCEL_PROJECT_PRODUCTION_URL`. Set it when you use a custom domain |
 | `ALLOWED_REDIRECT_URIS` | no | Defaults to Claude's callbacks (`https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`) |
 | `MCP_OAUTH_CLIENT_ID` | no | Defaults to `whoop-mcp-connector` |
-| `MCP_JWT_SECRET` | no | Explicit connector JWT key; derived from `MCP_AUTH_TOKEN` when unset |
-| `WHOOP_TOKEN_ENCRYPTION_KEY` | no | Explicit at-rest key; defaults to `MCP_AUTH_TOKEN` |
 | `WHOOP_MCP_PRIVACY_MODE` | no | `standard` (default) or `aggregate` |
 
 With the Vercel CLI:
@@ -87,9 +87,17 @@ vercel deploy --prod
 If you use Vercel's Supabase integration, `SUPABASE_URL` and
 `SUPABASE_SERVICE_ROLE_KEY` are set for you.
 
-> Rotating `MCP_AUTH_TOKEN` (without setting `MCP_JWT_SECRET` and
-> `WHOOP_TOKEN_ENCRYPTION_KEY`) signs out Claude and makes the stored WHOOP
-> tokens unreadable. Reconnect WHOOP and the connector afterwards.
+Generate each secret separately, e.g. `openssl rand -hex 32 | pbcopy`. Use a
+long random connector password (20+ characters from a password manager).
+
+| Rotate | Effect |
+|---|---|
+| `MCP_AUTH_TOKEN` | Header clients need the new value; nothing else changes |
+| `MCP_JWT_SECRET` | Signs Claude out everywhere (use this to revoke connector access) |
+| `WHOOP_TOKEN_ENCRYPTION_KEY` | Stored WHOOP tokens become unreadable; reconnect at `/whoop/connect` |
+
+Scope every variable to **Production** only, and keep Vercel's *Git Fork
+Protection* enabled so pull requests from forks never run with these secrets.
 
 ## 4. Link your WHOOP account
 
@@ -125,6 +133,20 @@ curl https://<your-domain>/health
 curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" https://<your-domain>/health
 # → {"status":"ok","whoopConnected":true}
 ```
+
+## Security model
+
+- `/mcp` accepts either the static bearer or a connector access token
+  (HS256 JWT, 1 hour). Refresh tokens rotate and replays are rejected.
+- The connector password gates both `/authorize` and `/whoop/connect`.
+  After 10 failed attempts within 15 minutes (counted in Supabase across all
+  instances and both forms) both are locked for everyone until the window passes.
+- The WHOOP connect flow is bound to the browser that started it
+  (`__Host-` cookie), so a leaked WHOOP consent URL cannot be completed elsewhere.
+- WHOOP tokens are AES-256-GCM encrypted; login codes and states are stored as
+  SHA-256 hashes. All tables have RLS with no policies and no anon grants.
+- Pages send a strict CSP, `X-Frame-Options: DENY`, `nosniff` and
+  `no-referrer`. Configuration errors only name variables in the deployment logs.
 
 ## Limits
 

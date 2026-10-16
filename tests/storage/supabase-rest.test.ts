@@ -102,6 +102,28 @@ describe("createSupabaseRest", () => {
     expect((error as SupabaseError).message).toContain("relation does not exist");
   });
 
+  it("never includes PostgREST details (which can echo row values) in errors", async () => {
+    const fetchMock = mockFetch(
+      new Response(
+        JSON.stringify({
+          code: "23502",
+          message: "null value in column violates not-null constraint",
+          details: "Failing row contains (secret-verifier-value)",
+          hint: null,
+        }),
+        { status: 400 }
+      )
+    );
+    const db = createSupabaseRest({
+      url: "https://proj.supabase.co",
+      serviceKey: "k",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const error = (await db.insert("t", {}).catch((e: unknown) => e)) as Error;
+    expect(error.message).toContain("23502");
+    expect(error.message).not.toContain("secret-verifier-value");
+  });
+
   it("throws SupabaseError on network failure", async () => {
     const fetchMock = vi.fn(async () => {
       throw new TypeError("fetch failed");

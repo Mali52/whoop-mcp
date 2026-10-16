@@ -142,12 +142,38 @@ export interface AuthCodeInput {
   resource?: string;
 }
 
+/** Sync or async return — lets in-memory and database-backed stores share one contract. */
+export type MaybePromise<T> = T | Promise<T>;
+
+/**
+ * Storage contract for authorization codes. Implemented in-memory
+ * ({@link AuthCodeStore}) for long-running servers and by Supabase for
+ * serverless deployments where `/authorize` and `/token` may run on
+ * different instances.
+ */
+export interface AuthCodeRepository {
+  store(code: string, input: AuthCodeInput): MaybePromise<void>;
+  peek(code: string): MaybePromise<AuthCodeRecord | null>;
+  consume(code: string): MaybePromise<AuthCodeRecord | null>;
+  stop?(): void;
+}
+
+/** Storage contract for consumed refresh-token jtis. */
+export interface UsedJtiRepository {
+  /**
+   * Atomically record a jti as consumed. Returns `false` if it was already
+   * consumed (replay), `true` on first use.
+   */
+  markUsed(jti: string, expiresAtSeconds: number): MaybePromise<boolean>;
+  stop?(): void;
+}
+
 /**
  * In-memory store for OAuth authorization codes.
  * Codes are one-time use; consuming a code marks it consumed but does not
  * delete it (allows replay detection within the TTL window).
  */
-export class AuthCodeStore {
+export class AuthCodeStore implements AuthCodeRepository {
   private codes = new Map<string, AuthCodeRecord>();
   private cleanupTimer: NodeJS.Timeout | null = null;
   private readonly ttlMs: number;
@@ -253,7 +279,7 @@ interface UsedJtiRecord {
  * check would fail anyway, so we can drop the record without losing
  * reuse-detection coverage.
  */
-export class UsedJtiStore {
+export class UsedJtiStore implements UsedJtiRepository {
   private readonly used = new Map<string, UsedJtiRecord>();
   private cleanupTimer: NodeJS.Timeout | null = null;
 
@@ -279,6 +305,12 @@ export class UsedJtiStore {
   /** Mark a jti as consumed; expiresAt is the JWT's exp (epoch seconds). */
   add(jti: string, expiresAtSeconds: number): void {
     this.used.set(jti, { expiresAt: expiresAtSeconds * 1000 });
+  }
+
+  markUsed(jti: string, expiresAtSeconds: number): boolean {
+    if (this.has(jti)) return false;
+    this.add(jti, expiresAtSeconds);
+    return true;
   }
 
   cleanup(): void {

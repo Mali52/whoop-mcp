@@ -32,6 +32,8 @@ import type {
 import {
   AuthCodeStore,
   UsedJtiStore,
+  type AuthCodeRepository,
+  type UsedJtiRepository,
   generateAuthCode,
   generateJti,
   isAllowedRedirectUri,
@@ -89,10 +91,10 @@ export interface OAuthConnectorOptions {
   jwtSecret: Uint8Array;
   /** Default scopes granted on successful auth */
   scopes: string[];
-  /** Auth code store (injectable for tests) */
-  authCodeStore?: AuthCodeStore;
+  /** Auth code store (injectable; database-backed on serverless) */
+  authCodeStore?: AuthCodeRepository;
   /** Consumed-jti store for refresh-token rotation reuse detection */
-  usedJtiStore?: UsedJtiStore;
+  usedJtiStore?: UsedJtiRepository;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,8 +103,8 @@ export interface OAuthConnectorOptions {
 
 export class OAuthConnectorProvider implements OAuthServerProvider {
   private readonly _clientsStore: StaticClientsStore;
-  private readonly _authCodes: AuthCodeStore;
-  private readonly _usedJtis: UsedJtiStore;
+  private readonly _authCodes: AuthCodeRepository;
+  private readonly _usedJtis: UsedJtiRepository;
   private readonly _allowedRedirectUris: string[];
   private readonly _jwtSecret: Uint8Array;
   private readonly _scopes: string[];
@@ -151,7 +153,7 @@ export class OAuthConnectorProvider implements OAuthServerProvider {
 
     // Generate a one-time authorization code
     const code = generateAuthCode();
-    this._authCodes.store(code, {
+    await this._authCodes.store(code, {
       clientId: _client.client_id,
       codeChallenge: params.codeChallenge,
       codeChallengeMethod: "S256",
@@ -179,7 +181,7 @@ export class OAuthConnectorProvider implements OAuthServerProvider {
     _client: OAuthClientInformationFull,
     authorizationCode: string
   ): Promise<string> {
-    const record = this._authCodes.peek(authorizationCode);
+    const record = await this._authCodes.peek(authorizationCode);
     if (!record) {
       throw new Error("Invalid or expired authorization code");
     }
@@ -197,7 +199,7 @@ export class OAuthConnectorProvider implements OAuthServerProvider {
     redirectUri?: string,
     _resource?: URL
   ): Promise<OAuthTokens> {
-    const record = this._authCodes.consume(authorizationCode);
+    const record = await this._authCodes.consume(authorizationCode);
     if (!record) {
       throw new Error("Invalid, expired, or already-consumed authorization code");
     }
@@ -243,10 +245,9 @@ export class OAuthConnectorProvider implements OAuthServerProvider {
     if (!verified.jti) {
       throw new Error("Refresh token missing jti — cannot enforce rotation");
     }
-    if (this._usedJtis.has(verified.jti)) {
+    if (!(await this._usedJtis.markUsed(verified.jti, verified.expiresAt))) {
       throw new Error("Refresh token has already been used (replay detected)");
     }
-    this._usedJtis.add(verified.jti, verified.expiresAt);
 
     // If scopes are requested, they must be a subset of the original grant
     const grantedScopes = verified.scopes;
@@ -295,8 +296,8 @@ export class OAuthConnectorProvider implements OAuthServerProvider {
    * Call when stopping the server.
    */
   stop(): void {
-    this._authCodes.stop();
-    this._usedJtis.stop();
+    this._authCodes.stop?.();
+    this._usedJtis.stop?.();
   }
 
   // -------------------------------------------------------------------------
@@ -353,7 +354,7 @@ const HTML_ENTITIES: Record<string, string> = {
   "'": "&#39;",
 };
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value.replace(HTML_FORBIDDEN, (c) => HTML_ENTITIES[c] ?? c);
 }
 
@@ -462,6 +463,15 @@ export interface CreateOAuthAppOptions {
   trustProxy?: boolean | number | string | string[];
   /** Pre-built provider (for tests) — overrides internal construction */
   provider?: OAuthConnectorProvider;
+  /** Auth code store override (e.g. Supabase-backed on serverless) */
+  authCodeStore?: AuthCodeRepository;
+  /** Consumed-jti store override (e.g. Supabase-backed on serverless) */
+  usedJtiStore?: UsedJtiRepository;
+  /**
+   * Protected resource URL advertised via RFC 9728 metadata. Defaults to the
+   * issuer (publicUrl). Set to `<publicUrl>/mcp` when /mcp is the resource.
+   */
+  resourceServerUrl?: string;
 }
 
 export interface CreateOAuthAppResult {
@@ -495,6 +505,8 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
       allowedRedirectUris: options.allowedRedirectUris,
       jwtSecret: options.jwtSecret,
       scopes: options.scopes,
+      ...(options.authCodeStore && { authCodeStore: options.authCodeStore }),
+      ...(options.usedJtiStore && { usedJtiStore: options.usedJtiStore }),
     });
 
   const app = express();
@@ -566,6 +578,9 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
     mcpAuthRouter({
       provider,
       issuerUrl: publicUrl,
+      ...(options.resourceServerUrl !== undefined && {
+        resourceServerUrl: new URL(options.resourceServerUrl),
+      }),
       authorizationOptions: { rateLimit: false },
       tokenOptions: { rateLimit: false },
     })

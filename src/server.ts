@@ -8,7 +8,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { WhoopClient } from "./api/client.js";
-import { WhoopApiError, WhoopNetworkError, WhoopAuthError } from "./api/client.js";
+import {
+  WhoopApiError,
+  WhoopNetworkError,
+  WhoopAuthError,
+  WhoopNotConnectedError,
+} from "./api/client.js";
 import { getProfile } from "./tools/get-profile.js";
 import { getBodyMeasurement } from "./tools/get-body-measurement.js";
 import { getRecoveryCollection } from "./tools/get-recovery.js";
@@ -127,7 +132,9 @@ function errorResponse(error: unknown): {
 } {
   let message: string;
 
-  if (error instanceof WhoopApiError) {
+  if (error instanceof WhoopNotConnectedError) {
+    message = error.message;
+  } else if (error instanceof WhoopApiError) {
     message = `WHOOP API returned ${error.statusCode}. Retry later or verify authorization.`;
   } else if (error instanceof WhoopAuthError) {
     message = "WHOOP authentication failed. Run setup --verify to reconnect.";
@@ -161,7 +168,7 @@ interface ToolExecution {
 }
 
 function classifyToolError(error: unknown): ToolErrorCategory {
-  if (error instanceof WhoopAuthError) return "api_auth";
+  if (error instanceof WhoopAuthError || error instanceof WhoopNotConnectedError) return "api_auth";
   if (error instanceof WhoopApiError) {
     if (error.statusCode === 401 || error.statusCode === 403) return "api_auth";
     if (error.statusCode === 429) return "api_rate_limit";

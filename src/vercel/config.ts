@@ -10,8 +10,8 @@ import {
 } from "../transport/oauth-helpers.js";
 import type { LogLevel } from "../logging/logger.js";
 
-/** Minimum MCP_AUTH_TOKEN length — it also seeds the JWT and encryption keys. */
-export const MIN_AUTH_TOKEN_LENGTH = 32;
+/** Minimum length for MCP_AUTH_TOKEN, MCP_JWT_SECRET and WHOOP_TOKEN_ENCRYPTION_KEY. */
+export const MIN_SECRET_LENGTH = 32;
 
 /** Claude's OAuth callback URLs (web, desktop and mobile share these). */
 export const DEFAULT_ALLOWED_REDIRECT_URIS = [
@@ -32,9 +32,9 @@ export interface HostedConfig {
   publicUrl: string;
   allowedRedirectUris: string[];
   oauthClientId: string;
-  /** Explicit JWT secret; derived from authToken when unset. */
-  jwtSecret?: string;
-  /** Secret for encrypting WHOOP tokens at rest; defaults to authToken. */
+  /** HS256 signing key for connector tokens. Independent of authToken. */
+  jwtSecret: string;
+  /** Secret for encrypting WHOOP tokens at rest. Independent of authToken. */
   tokenEncryptionSecret: string;
   allowedOrigins: string[];
   privacyMode: PrivacyMode;
@@ -79,9 +79,24 @@ export function parseHostedConfig(env: Env): HostedConfig {
     problems.push("SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY) is required.");
   }
 
-  const authToken = required("MCP_AUTH_TOKEN");
-  if (authToken && authToken.length < MIN_AUTH_TOKEN_LENGTH) {
-    problems.push(`MCP_AUTH_TOKEN must be at least ${MIN_AUTH_TOKEN_LENGTH} characters.`);
+  // Three independent secrets: a leaked client bearer must not let anyone
+  // forge connector JWTs or decrypt the stored WHOOP tokens, and each can be
+  // rotated without invalidating the others.
+  const secret = (name: string): string => {
+    const value = required(name);
+    if (value && value.length < MIN_SECRET_LENGTH) {
+      problems.push(`${name} must be at least ${MIN_SECRET_LENGTH} characters.`);
+    }
+    return value;
+  };
+  const authToken = secret("MCP_AUTH_TOKEN");
+  const jwtSecret = secret("MCP_JWT_SECRET");
+  const tokenEncryptionSecret = secret("WHOOP_TOKEN_ENCRYPTION_KEY");
+  const secrets = [authToken, jwtSecret, tokenEncryptionSecret].filter((v) => v.length > 0);
+  if (new Set(secrets).size !== secrets.length) {
+    problems.push(
+      "MCP_AUTH_TOKEN, MCP_JWT_SECRET and WHOOP_TOKEN_ENCRYPTION_KEY must all be different."
+    );
   }
 
   const connectorPassword = required("MCP_CONNECTOR_PASSWORD");
@@ -137,8 +152,8 @@ export function parseHostedConfig(env: Env): HostedConfig {
     publicUrl,
     allowedRedirectUris: redirectUris.length > 0 ? redirectUris : DEFAULT_ALLOWED_REDIRECT_URIS,
     oauthClientId: env.MCP_OAUTH_CLIENT_ID ?? "whoop-mcp-connector",
-    ...(env.MCP_JWT_SECRET ? { jwtSecret: env.MCP_JWT_SECRET } : {}),
-    tokenEncryptionSecret: env.WHOOP_TOKEN_ENCRYPTION_KEY ?? authToken,
+    jwtSecret,
+    tokenEncryptionSecret,
     allowedOrigins: list(env.MCP_ALLOWED_ORIGINS),
     privacyMode: privacy.success ? privacy.data : "standard",
     disableResources: env.WHOOP_MCP_DISABLE_RESOURCES === "1",

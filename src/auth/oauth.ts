@@ -19,6 +19,12 @@ import { acquireOAuthFlowLock } from "./oauth-lock.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 
+/**
+ * Timeout for WHOOP token requests. Kept below the hosted refresh lease
+ * (20s) so a slow refresh can never overlap one from another instance.
+ */
+export const WHOOP_TOKEN_TIMEOUT_MS = 10_000;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -159,6 +165,7 @@ export async function exchangeCodeForTokens(
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
+    signal: AbortSignal.timeout(WHOOP_TOKEN_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -200,6 +207,7 @@ export async function refreshAccessToken(
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
+      signal: AbortSignal.timeout(WHOOP_TOKEN_TIMEOUT_MS),
     });
   } catch (error) {
     // fetch throws on transport-level failures (DNS, TCP, TLS) — distinct from auth failure.

@@ -51,6 +51,20 @@ export class SupabaseError extends Error {
   }
 }
 
+/**
+ * Only PostgREST's `code` and `message` — never `details`/`hint`, which can
+ * echo row values (e.g. "Failing row contains (...)") into logs.
+ */
+async function errorSummary(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { code?: unknown; message?: unknown };
+    const parts = [body.code, body.message].filter((v): v is string => typeof v === "string");
+    return parts.length > 0 ? `: ${parts.join(" ").slice(0, 200)}` : "";
+  } catch {
+    return "";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -101,9 +115,8 @@ export function createSupabaseRest(options: SupabaseRestOptions): SupabaseRest {
     }
 
     if (!response.ok) {
-      const detail = await response.text().catch(() => "");
       throw new SupabaseError(
-        `Supabase ${method} ${table} failed (${response.status})${detail ? `: ${detail.slice(0, 300)}` : ""}`,
+        `Supabase ${method} ${table} failed (${response.status})${await errorSummary(response)}`,
         response.status
       );
     }

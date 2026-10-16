@@ -12,6 +12,7 @@ const PRIMARY_KEYS: Record<string, string> = {
   oauth_auth_codes: "code_hash",
   oauth_used_jtis: "jti",
   whoop_oauth_states: "state_hash",
+  auth_failures: "id",
 };
 
 function compare(a: unknown, b: string): number {
@@ -36,7 +37,7 @@ function matchesCondition(row: Row, column: string, expression: string): boolean
 
 function matches(row: Row, filters: Filters): boolean {
   return Object.entries(filters).every(([column, expression]) => {
-    if (column === "select") return true;
+    if (column === "select" || column === "limit") return true;
     if (column === "or") {
       const inner = expression.replace(/^\(|\)$/g, "").split(",");
       return inner.some((clause) => {
@@ -55,6 +56,7 @@ export interface FakeSupabase extends SupabaseRest {
 
 export function createFakeSupabase(): FakeSupabase {
   const tables = new Map<string, Row[]>();
+  let nextId = 0;
   const rows = (table: string): Row[] => {
     let list = tables.get(table);
     if (!list) {
@@ -69,11 +71,13 @@ export function createFakeSupabase(): FakeSupabase {
     tables,
     rows,
     async select<T>(table: string, filters: Filters): Promise<T[]> {
-      return clone<T[]>(rows(table).filter((r) => matches(r, filters)));
+      const hit = rows(table).filter((r) => matches(r, filters));
+      return clone<T[]>(filters.limit ? hit.slice(0, Number(filters.limit)) : hit);
     },
     async insert<T>(table: string, row: Row, options?: InsertOptions): Promise<T[]> {
       const list = rows(table);
       const pk = PRIMARY_KEYS[table] ?? "id";
+      if (pk === "id" && row.id === undefined) row = { ...row, id: ++nextId };
       const existing = list.find((r) => r[pk] === row[pk]);
       if (existing) {
         if (options?.onConflict === "ignore") return [];

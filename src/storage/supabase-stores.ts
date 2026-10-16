@@ -17,6 +17,7 @@ import type {
   AuthCodeInput,
   AuthCodeRecord,
   AuthCodeRepository,
+  LoginGuard,
   UsedJtiRepository,
 } from "../transport/oauth-helpers.js";
 import { AUTH_CODE_TTL_MS } from "../transport/oauth-helpers.js";
@@ -31,6 +32,13 @@ export const TABLE_WHOOP_TOKENS = "whoop_tokens";
 export const TABLE_AUTH_CODES = "oauth_auth_codes";
 export const TABLE_USED_JTIS = "oauth_used_jtis";
 export const TABLE_WHOOP_STATES = "whoop_oauth_states";
+export const TABLE_AUTH_FAILURES = "auth_failures";
+
+/** Lock all password logins after this many failures within the window. */
+export const MAX_LOGIN_FAILURES = 10;
+export const LOGIN_FAILURE_WINDOW_MS = 15 * 60_000;
+/** Failure rows are kept this long for auditing, then purged. */
+export const LOGIN_FAILURE_RETENTION_MS = 7 * 24 * 60 * 60_000;
 
 /** Single-user deployment: one WHOOP account per server. */
 export const DEFAULT_ACCOUNT_ID = "default";
@@ -279,6 +287,35 @@ export function createSupabaseWhoopStateStore(
         expires_at: `gt.${iso(Date.now())}`,
       });
       return row?.code_verifier ?? null;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Failed password attempts (global brute-force lock)
+// ---------------------------------------------------------------------------
+
+export function createSupabaseLoginGuard(
+  db: SupabaseRest,
+  options: { maxFailures?: number; windowMs?: number } = {}
+): LoginGuard {
+  const maxFailures = options.maxFailures ?? MAX_LOGIN_FAILURES;
+  const windowMs = options.windowMs ?? LOGIN_FAILURE_WINDOW_MS;
+
+  return {
+    async isLocked(): Promise<boolean> {
+      const recent = await db.select(TABLE_AUTH_FAILURES, {
+        select: "id",
+        at: `gt.${iso(Date.now() - windowMs)}`,
+        limit: String(maxFailures),
+      });
+      return recent.length >= maxFailures;
+    },
+
+    async recordFailure(source: string, ip: string): Promise<void> {
+      const now = Date.now();
+      await db.remove(TABLE_AUTH_FAILURES, { at: `lt.${iso(now - LOGIN_FAILURE_RETENTION_MS)}` });
+      await db.insert(TABLE_AUTH_FAILURES, { at: iso(now), source, ip: ip.slice(0, 64) });
     },
   };
 }

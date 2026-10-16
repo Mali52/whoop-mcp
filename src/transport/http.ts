@@ -155,11 +155,11 @@ export function sendJson(res: ServerResponse, status: number, data: unknown): vo
 // Body parser (reads raw body for POST requests)
 // ---------------------------------------------------------------------------
 
-export function readBody(req: IncomingMessage): Promise<string> {
+export function readBody(req: IncomingMessage, maxBytes = 1024 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    const MAX_BODY = 1024 * 1024; // 1MB limit
+    const MAX_BODY = maxBytes; // default 1MB
 
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;

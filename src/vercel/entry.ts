@@ -3,8 +3,8 @@
  *
  * `api/index.js` re-exports the result as the serverless function. The
  * handler is built lazily on the first request and reused while the instance
- * stays warm. Configuration errors are returned as a 500 that names the
- * missing/invalid variables (never their values) instead of crashing.
+ * stays warm. Configuration errors return a generic 500; the missing or
+ * invalid variable names are written to the deployment logs only.
  */
 
 import { sendJson } from "../transport/http.js";
@@ -24,9 +24,12 @@ export function createVercelHandlerFromEnv(
       handler = await ready;
     } catch (error) {
       ready = undefined;
-      const message = error instanceof Error ? error.message : "Unknown configuration error";
-      console.error(message);
-      sendJson(res, 500, { error: "Server misconfigured", message });
+      // Details (variable names) go to the deployment logs only.
+      console.error(error instanceof Error ? error.message : "Unknown configuration error");
+      sendJson(res, 500, {
+        error: "Server misconfigured",
+        message: "Check the deployment logs for details.",
+      });
       return;
     }
     await handler(req, res);

@@ -33,6 +33,7 @@ import {
   AuthCodeStore,
   UsedJtiStore,
   type AuthCodeRepository,
+  type LoginGuard,
   type UsedJtiRepository,
   generateAuthCode,
   generateJti,
@@ -95,6 +96,8 @@ export interface OAuthConnectorOptions {
   authCodeStore?: AuthCodeRepository;
   /** Consumed-jti store for refresh-token rotation reuse detection */
   usedJtiStore?: UsedJtiRepository;
+  /** Access-token lifetime in seconds (default 24h) */
+  accessTokenTtlSeconds?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +111,7 @@ export class OAuthConnectorProvider implements OAuthServerProvider {
   private readonly _allowedRedirectUris: string[];
   private readonly _jwtSecret: Uint8Array;
   private readonly _scopes: string[];
+  private readonly _accessTokenTtlSeconds: number;
 
   constructor(options: OAuthConnectorOptions) {
     this._clientsStore = new StaticClientsStore(options.client);
@@ -116,6 +120,7 @@ export class OAuthConnectorProvider implements OAuthServerProvider {
     this._allowedRedirectUris = options.allowedRedirectUris;
     this._jwtSecret = options.jwtSecret;
     this._scopes = options.scopes;
+    this._accessTokenTtlSeconds = options.accessTokenTtlSeconds ?? ACCESS_TOKEN_TTL_SECONDS;
   }
 
   get clientsStore(): OAuthRegisteredClientsStore {
@@ -312,7 +317,7 @@ export class OAuthConnectorProvider implements OAuthServerProvider {
     const accessOpts = {
       clientId,
       scopes,
-      ttlSeconds: ACCESS_TOKEN_TTL_SECONDS,
+      ttlSeconds: this._accessTokenTtlSeconds,
       type: "access" as const,
       ...(resource !== undefined && { resource }),
     };
@@ -334,7 +339,7 @@ export class OAuthConnectorProvider implements OAuthServerProvider {
     return {
       access_token: accessToken,
       token_type: "Bearer",
-      expires_in: ACCESS_TOKEN_TTL_SECONDS,
+      expires_in: this._accessTokenTtlSeconds,
       refresh_token: refreshToken,
       scope: scopes.join(" "),
     };
@@ -415,6 +420,8 @@ function renderPasswordPage(params: Record<string, string>, error?: string): str
   <div class="card">
     <h1>Authorize WHOOP MCP connection</h1>
     <p>Enter the connector password to grant this client access to your WHOOP data.</p>
+    <p><strong>Only continue if you just clicked “Connect” in Claude yourself.</strong>
+       If you opened this page from a link someone sent you, close it.</p>
     ${errorBlock}
     <form method="POST" action="/authorize" autocomplete="off">
       ${hidden}
@@ -487,6 +494,10 @@ export interface CreateOAuthAppOptions {
   authCodeStore?: AuthCodeRepository;
   /** Consumed-jti store override (e.g. Supabase-backed on serverless) */
   usedJtiStore?: UsedJtiRepository;
+  /** Cross-instance brute-force guard for the password form */
+  loginGuard?: LoginGuard;
+  /** Access-token lifetime in seconds (default 24h) */
+  accessTokenTtlSeconds?: number;
   /**
    * Protected resource URL advertised via RFC 9728 metadata. Defaults to the
    * issuer (publicUrl). Set to `<publicUrl>/mcp` when /mcp is the resource.
@@ -527,6 +538,9 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
       scopes: options.scopes,
       ...(options.authCodeStore && { authCodeStore: options.authCodeStore }),
       ...(options.usedJtiStore && { usedJtiStore: options.usedJtiStore }),
+      ...(options.accessTokenTtlSeconds !== undefined && {
+        accessTokenTtlSeconds: options.accessTokenTtlSeconds,
+      }),
     });
 
   const formAction = formActionSources(options.allowedRedirectUris);
@@ -572,16 +586,26 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
     "/authorize",
     authorizeLimiter,
     formParser,
-    (req: Request, res: Response, next: NextFunction) => {
+    async (req: Request, res: Response, next: NextFunction) => {
       const body = req.body as Record<string, unknown>;
       const provided = typeof body.connector_password === "string" ? body.connector_password : "";
+      const params: Record<string, string> = {};
+      for (const k of AUTHORIZE_PARAMS) {
+        const v = body[k];
+        if (typeof v === "string") params[k] = v;
+      }
+
+      // Checked before the password so a locked-out attacker learns nothing.
+      if (options.loginGuard && (await options.loginGuard.isLocked())) {
+        applyAuthorizePageHeaders(res, formAction);
+        res
+          .status(429)
+          .send(renderPasswordPage(params, "Too many failed attempts. Try again in 15 minutes."));
+        return;
+      }
 
       if (!comparePassword(provided, options.connectorPassword)) {
-        const params: Record<string, string> = {};
-        for (const k of AUTHORIZE_PARAMS) {
-          const v = body[k];
-          if (typeof v === "string") params[k] = v;
-        }
+        await options.loginGuard?.recordFailure("authorize", req.ip ?? "unknown");
         applyAuthorizePageHeaders(res, formAction);
         res.status(401).send(renderPasswordPage(params, "Incorrect password. Try again."));
         return;

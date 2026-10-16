@@ -827,3 +827,76 @@ describe("Refresh token rotation (reuse detection)", () => {
     ).rejects.toThrow(/resource indicator/);
   });
 });
+
+describe("createOAuthApp — /authorize rate limit", () => {
+  function authorizeQuery(ctx: { clientId: string; redirectUri: string }): URLSearchParams {
+    return new URLSearchParams({
+      client_id: ctx.clientId,
+      redirect_uri: ctx.redirectUri,
+      response_type: "code",
+      code_challenge: pkcePair().challenge,
+      code_challenge_method: "S256",
+      state: "s",
+    });
+  }
+
+  it("does not count page loads or successful logins", async () => {
+    const ctx = await startApp();
+    try {
+      for (let i = 0; i < 8; i++) {
+        const page = await fetch(`${ctx.baseUrl}/authorize?${authorizeQuery(ctx).toString()}`);
+        expect(page.status).toBe(200);
+      }
+      const body = authorizeQuery(ctx);
+      body.set("connector_password", ctx.password);
+      const login = await fetch(`${ctx.baseUrl}/authorize`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+        redirect: "manual",
+      });
+      expect(login.status).toBe(302);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it("blocks after 5 wrong passwords per minute", async () => {
+    const ctx = await startApp();
+    try {
+      const wrong = (): Promise<Response> => {
+        const body = authorizeQuery(ctx);
+        body.set("connector_password", "wrong-password-123");
+        return fetch(`${ctx.baseUrl}/authorize`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body,
+        });
+      };
+      for (let i = 0; i < 5; i++) expect((await wrong()).status).toBe(401);
+      expect((await wrong()).status).toBe(429);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+describe("createOAuthApp — /authorize CSP", () => {
+  it("allows the form to redirect to the allowed client callback origins", async () => {
+    const ctx = await startApp();
+    try {
+      const res = await fetch(`${ctx.baseUrl}/authorize?client_id=${ctx.clientId}`);
+      const csp = res.headers.get("content-security-policy") ?? "";
+      const formAction = csp.split(";").find((d) => d.trim().startsWith("form-action")) ?? "";
+      // Chrome enforces form-action on the post-login redirect, not just the POST.
+      expect(formAction.trim().split(/\s+/)).toEqual([
+        "form-action",
+        "'self'",
+        new URL(ctx.redirectUri).origin,
+      ]);
+      expect(csp).toContain("frame-ancestors 'none'");
+    } finally {
+      await ctx.close();
+    }
+  });
+});

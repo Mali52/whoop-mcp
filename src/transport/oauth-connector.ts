@@ -428,14 +428,34 @@ function renderPasswordPage(params: Record<string, string>, error?: string): str
 </html>`;
 }
 
+/**
+ * CSP `form-action` sources for the password form. Browsers (Chrome) apply
+ * form-action to the redirect that follows the POST, so the allowed client
+ * callbacks must be listed or the successful login is silently blocked.
+ */
+export function formActionSources(allowedRedirectUris: string[]): string {
+  const sources = new Set<string>(["'self'"]);
+  for (const uri of allowedRedirectUris) {
+    try {
+      const url = new URL(uri);
+      sources.add(
+        url.protocol === "http:" || url.protocol === "https:" ? url.origin : url.protocol
+      );
+    } catch {
+      // Invalid entries never match a redirect anyway.
+    }
+  }
+  return [...sources].join(" ");
+}
+
 /** Apply anti-clickjacking + tight CSP headers to the password-prompt response. */
-function applyAuthorizePageHeaders(res: Response): void {
+function applyAuthorizePageHeaders(res: Response, formAction: string): void {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+    `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; frame-ancestors 'none'; base-uri 'none'`
   );
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -509,6 +529,7 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
       ...(options.usedJtiStore && { usedJtiStore: options.usedJtiStore }),
     });
 
+  const formAction = formActionSources(options.allowedRedirectUris);
   const app = express();
   app.disable("x-powered-by");
   if (options.trustProxy !== undefined) {
@@ -519,9 +540,12 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
   const formParser = express.urlencoded({ extended: false });
 
   // Per-endpoint rate limits (override the SDK's built-in rate limiting)
+  // Only failed password attempts (4xx) count: loading the page and the
+  // successful redirect must never lock the owner out mid-login.
   const authorizeLimiter = rateLimit({
     windowMs: 60_000,
-    limit: 3,
+    limit: 5,
+    skipSuccessfulRequests: true,
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -539,7 +563,7 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
       const v = req.query[k];
       if (typeof v === "string") params[k] = v;
     }
-    applyAuthorizePageHeaders(res);
+    applyAuthorizePageHeaders(res, formAction);
     res.status(200).send(renderPasswordPage(params));
   });
 
@@ -558,7 +582,7 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
           const v = body[k];
           if (typeof v === "string") params[k] = v;
         }
-        applyAuthorizePageHeaders(res);
+        applyAuthorizePageHeaders(res, formAction);
         res.status(401).send(renderPasswordPage(params, "Incorrect password. Try again."));
         return;
       }

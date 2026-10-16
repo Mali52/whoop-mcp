@@ -101,7 +101,7 @@ export function safeTokenCompare(provided: string, expected: string): boolean {
 // Auth helpers
 // ---------------------------------------------------------------------------
 
-function extractBearerToken(req: IncomingMessage): string | null {
+export function extractBearerToken(req: IncomingMessage): string | null {
   const authHeader = req.headers.authorization;
   if (!authHeader) return null;
   const parts = authHeader.split(" ");
@@ -113,7 +113,11 @@ function extractBearerToken(req: IncomingMessage): string | null {
 // CORS handling
 // ---------------------------------------------------------------------------
 
-function handleCors(req: IncomingMessage, res: ServerResponse, allowedOrigins: string[]): boolean {
+export function handleCors(
+  req: IncomingMessage,
+  res: ServerResponse,
+  allowedOrigins: string[]
+): boolean {
   const origin = req.headers.origin;
 
   if (origin && allowedOrigins.includes(origin)) {
@@ -138,7 +142,7 @@ function handleCors(req: IncomingMessage, res: ServerResponse, allowedOrigins: s
 // JSON response helper
 // ---------------------------------------------------------------------------
 
-function sendJson(res: ServerResponse, status: number, data: unknown): void {
+export function sendJson(res: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data);
   res.writeHead(status, {
     "Content-Type": "application/json",
@@ -151,7 +155,7 @@ function sendJson(res: ServerResponse, status: number, data: unknown): void {
 // Body parser (reads raw body for POST requests)
 // ---------------------------------------------------------------------------
 
-function readBody(req: IncomingMessage): Promise<string> {
+export function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;

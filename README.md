@@ -123,6 +123,7 @@ Parameters, date expressions, resources and caching are in the [tool reference](
 | [Telemetry](references/telemetry.md) | Consent, opting out, what's collected and how long it's kept |
 | [Troubleshooting](references/troubleshooting.md) | Local diagnostics, common errors and MCP Inspector |
 | [Deployment](references/deployment.md) | Docker, cloud hosting and remote connector OAuth |
+| [Vercel + Supabase](references/vercel-supabase.md) | Serverless hosting with tokens and OAuth state in Supabase |
 | [Development](references/development.md) | Tests, project structure and release workflow |
 | [Background](references/background.md) | Ecosystem research and the video walkthrough |
 

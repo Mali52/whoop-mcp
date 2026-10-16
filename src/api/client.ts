@@ -90,6 +90,21 @@ export class WhoopAuthError extends Error {
   }
 }
 
+/**
+ * Error thrown when no usable WHOOP authorization exists and the user has to
+ * (re)connect through a browser — used by the hosted (Vercel) deployment.
+ */
+export class WhoopNotConnectedError extends Error {
+  public override readonly name = "WhoopNotConnectedError";
+
+  constructor(
+    public readonly connectUrl: string,
+    reason = "WHOOP account is not connected."
+  ) {
+    super(`${reason} Open ${connectUrl} in a browser to connect your WHOOP account.`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -278,6 +293,7 @@ export function createWhoopClient(options: WhoopClientOptions): WhoopClient {
           newToken = await options.onTokenRefresh();
           logger?.info("whoop token refreshed", logExtras({ url }));
         } catch (refreshError: unknown) {
+          if (refreshError instanceof WhoopNotConnectedError) throw refreshError;
           throw new WhoopAuthError(refreshError);
         }
 

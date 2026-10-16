@@ -1,5 +1,7 @@
 # Docker and Remote Hosting
 
+> Prefer serverless? See [Vercel + Supabase](vercel-supabase.md).
+
 [Back to README](../README.md)
 
 ## Deployment (Docker + Cloud Hosting)

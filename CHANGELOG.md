@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Serverless deployment on Vercel (`api/index.js`, `vercel.json`) with all
+  state in Supabase: encrypted WHOOP tokens, connector authorization codes and
+  refresh-token replay tracking. See `references/vercel-supabase.md`.
+- Browser-based WHOOP linking at `/whoop/connect` for hosted deployments,
+  replacing the loopback callback there.
+- Single-flight WHOOP token refresh across serverless instances.
+- Supabase schema migration in `supabase/migrations/`.
+
+### Changed
+- The OAuth connector accepts pluggable (sync or async) authorization-code and
+  used-jti stores and an optional protected-resource URL.
+
 ## [0.9.1] - 2026-10-09
 
 ### Changed

@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createHash, randomBytes } from "node:crypto";
 import { createVercelHandler } from "../../src/vercel/handler.js";
@@ -62,6 +62,28 @@ function tokenResponse(): Response {
   );
 }
 
+/**
+ * Mimic @vercel/node's response helpers: Vercel assigns these as own
+ * properties, shadowing Express's methods. Its redirect defaults to 307.
+ */
+function addVercelHelpers(res: ServerResponse): void {
+  const helpers = res as ServerResponse & Record<string, unknown>;
+  helpers.status = (code: number): ServerResponse => {
+    res.statusCode = code;
+    return res;
+  };
+  helpers.send = (body: string): ServerResponse => res.end(body);
+  helpers.json = (body: unknown): ServerResponse => {
+    res.setHeader("Content-Type", "application/json");
+    return res.end(JSON.stringify(body));
+  };
+  helpers.redirect = (statusOrUrl: number | string, url?: string): ServerResponse => {
+    const status = typeof statusOrUrl === "number" ? statusOrUrl : 307;
+    res.writeHead(status, { Location: typeof statusOrUrl === "string" ? statusOrUrl : url });
+    return res.end();
+  };
+}
+
 beforeAll(async () => {
   db = createFakeSupabase();
   const handler = await createVercelHandler({
@@ -69,7 +91,10 @@ beforeAll(async () => {
     db,
     logger: silentLogger,
   });
-  server = createServer((req, res) => void handler(req, res));
+  server = createServer((req, res) => {
+    addVercelHelpers(res);
+    void handler(req, res);
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
@@ -318,6 +343,8 @@ describe("hosted handler — Claude OAuth connector", () => {
       }).toString(),
       redirect: "manual",
     });
+    // 302 (not Vercel's default 307) so the browser follows with GET instead
+    // of re-POSTing the password form to Claude's callback.
     expect(authorize.status).toBe(302);
     const redirect = new URL(authorize.headers.get("location") ?? "");
     const code = redirect.searchParams.get("code") ?? "";

@@ -56,6 +56,21 @@ export interface VercelHandlerDeps {
 
 const OAUTH_PATHS = new Set(["/authorize", "/token", "/register", "/revoke"]);
 
+/**
+ * @vercel/node assigns `redirect`, `status`, `send` and `json` as own
+ * properties on every response, shadowing Express's prototype methods.
+ * Vercel's `redirect` defaults to 307, which makes the browser re-POST the
+ * connector password form to Claude's callback ("Method Not Allowed").
+ * Removing them lets Express's own implementations (302 redirects) apply.
+ */
+const VERCEL_RESPONSE_HELPERS = ["redirect", "status", "send", "json"] as const;
+
+export function stripVercelResponseHelpers(res: ServerResponse): void {
+  for (const name of VERCEL_RESPONSE_HELPERS) {
+    if (Object.prototype.hasOwnProperty.call(res, name)) Reflect.deleteProperty(res, name);
+  }
+}
+
 /** Minimal privacy notice — WHOOP requires a policy URL for every developer app. */
 function privacyPage(): string {
   return `<!doctype html>
@@ -280,6 +295,7 @@ export async function createVercelHandler(deps: VercelHandlerDeps): Promise<Node
       if (pathname === "/mcp") return await handleMcp(req, res);
 
       if (OAUTH_PATHS.has(pathname) || pathname.startsWith("/.well-known/")) {
+        stripVercelResponseHelpers(res);
         oauthHandler(req, res);
         return;
       }

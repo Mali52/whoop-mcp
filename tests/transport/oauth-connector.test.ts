@@ -880,3 +880,23 @@ describe("createOAuthApp — /authorize rate limit", () => {
     }
   });
 });
+
+describe("createOAuthApp — /authorize CSP", () => {
+  it("allows the form to redirect to the allowed client callback origins", async () => {
+    const ctx = await startApp();
+    try {
+      const res = await fetch(`${ctx.baseUrl}/authorize?client_id=${ctx.clientId}`);
+      const csp = res.headers.get("content-security-policy") ?? "";
+      const formAction = csp.split(";").find((d) => d.trim().startsWith("form-action")) ?? "";
+      // Chrome enforces form-action on the post-login redirect, not just the POST.
+      expect(formAction.trim().split(/\s+/)).toEqual([
+        "form-action",
+        "'self'",
+        new URL(ctx.redirectUri).origin,
+      ]);
+      expect(csp).toContain("frame-ancestors 'none'");
+    } finally {
+      await ctx.close();
+    }
+  });
+});

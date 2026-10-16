@@ -519,9 +519,12 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
   const formParser = express.urlencoded({ extended: false });
 
   // Per-endpoint rate limits (override the SDK's built-in rate limiting)
+  // Only failed password attempts (4xx) count: loading the page and the
+  // successful redirect must never lock the owner out mid-login.
   const authorizeLimiter = rateLimit({
     windowMs: 60_000,
-    limit: 3,
+    limit: 5,
+    skipSuccessfulRequests: true,
     standardHeaders: true,
     legacyHeaders: false,
   });
